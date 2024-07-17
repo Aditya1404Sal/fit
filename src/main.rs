@@ -1,11 +1,13 @@
-// use std::collections::HashMap;
+use std::collections::HashMap;
 use std::fs;
 use std::fs::File;
 use std::io::{Read, Write};
 use std::path::Path;
-// use std::path::PathBuf;
 use sha1::{Sha1, Digest};
 use clap::{Args, Parser, Subcommand};
+use flate2::write::ZlibEncoder;
+use flate2::read::ZlibDecoder;
+use flate2::Compression;
 
 #[derive(Parser)]
 struct Fit {
@@ -26,25 +28,21 @@ enum FitCommands {
 
 #[derive(Args)]
 struct CloneArgs {
-    #[clap(short, long)]
     url: String,
 }
 
 #[derive(Args)]
 struct FileArgs {
-    #[clap(short, long)]
     hash: String,
 }
 
 #[derive(Args)]
 struct AddArgs {
-    #[clap(short, long)]
-    file: String,
+    path: String,
 }
 
 #[derive(Args)]
 struct RmArgs {
-    #[clap(short, long)]
     file: String,
 }
 
@@ -78,66 +76,140 @@ fn init_workflow() {
 
 fn clone_workflow(args: CloneArgs) {
     // TBD
+    println!("Clone functionality not yet implemented {}", args.url);
 }
 
 fn log_workflow() {
     // TBD
+    println!("Log functionality not yet implemented");
 }
 
-fn add_workflow(args: AddArgs) {
-    let path = Path::new(&args.file);
-    if path.exists() {
-        let mut file = File::open(path).unwrap();
-        let mut contents = Vec::new();
-        file.read_to_end(&mut contents).unwrap();
+fn write_object(content: &[u8], object_type: &str) -> String {
+    let mut hasher = Sha1::new();
+    let header = format!("{} {}\0", object_type, content.len());
+    hasher.update(&header);
+    hasher.update(content);
+    let hash = hasher.finalize();
+    let hash_hex = format!("{:x}", hash);
+    let object_path = format!(".fit/objects/{}", hash_hex);
+    let file = File::create(object_path).unwrap();
+    let mut encoder = ZlibEncoder::new(file, Compression::default());
+    encoder.write_all(header.as_bytes()).unwrap();
+    encoder.write_all(content).unwrap();
+    encoder.finish().unwrap();
 
-        let mut hasher = Sha1::new();
-        hasher.update(&contents);
-        let hash = hasher.finalize();
-        let hash_hex = format!("{:x}", hash);
+    hash_hex
+}
 
-        let object_path = format!(".fit/objects/{}", hash_hex);
-        fs::write(&object_path, &contents).unwrap();
-
-        let mut index = fs::OpenOptions::new().append(true).open(".fit/index").unwrap();
-        writeln!(index, "{} {}", hash_hex, args.file).unwrap();
-
-        println!("Added {} to fit", args.file);
-    } else {
-        println!("File {} not found", args.file);
+fn read_object(hash: &str) -> Option<(String, Vec<u8>)> {
+    let object_path = format!(".fit/objects/{}", hash);
+    if !Path::new(&object_path).exists() {
+        return None;
     }
+
+    let file = File::open(object_path).unwrap();
+    let mut decoder = ZlibDecoder::new(file);
+    let mut content = Vec::new();
+    // decompression takes place here
+    decoder.read_to_end(&mut content).unwrap();
+    // null position to seperate the header from the content
+    let null_pos = content.iter().position(|&b| b == 0).unwrap();
+    let header = String::from_utf8_lossy(&content[..null_pos]).to_string();
+    // content starts just after the null position 
+    let object_content = content[null_pos + 1..].to_vec();
+    // object type like blob or tree
+    let mut parts = header.splitn(2, ' ');
+    let object_type = parts.next().unwrap().to_string();
+
+    Some((object_type, object_content))
+}
+// Simple management of adding anything
+fn add_workflow(args: AddArgs) {
+    let path = Path::new(&args.path);
+    if path.is_file() {
+        add_file(path);
+    } else if path.is_dir() {
+        add_directory(path);
+    } else {
+        println!("'{}' is not a valid file or directory", args.path);
+    }
+}
+
+fn remove_object(hash: &str) {
+    let object_path = format!(".fit/objects/{}", hash);
+    if Path::new(&object_path).exists() {
+        fs::remove_file(&object_path).unwrap();
+        println!("Removed old object {} from fit", hash);
+    }
+}
+
+fn add_file(path: &Path) {
+    let mut file = File::open(path).unwrap();
+    let mut contents = Vec::new();
+    file.read_to_end(&mut contents).unwrap();
+
+    let mut index = read_index();
+    let file_path = path.to_str().unwrap().to_string();
+
+    // Remove the old object if it exists
+    if let Some(old_hash) = index.get(&file_path) {
+        remove_object(old_hash);
+    }
+
+    let hash_hex = write_object(&contents, "blob");
+
+    index.insert(file_path, hash_hex);
+
+    write_index(&index);
+
+    println!("Added {} to fit", path.display());
+}
+
+fn add_directory(path: &Path) {
+    for entry in fs::read_dir(path).unwrap() {
+        let entry = entry.unwrap();
+        let path = entry.path();
+        if path.is_file() {
+            add_file(&path);
+        } else if path.is_dir() {
+            add_directory(&path);
+        }
+    }
+}
+
+fn read_index() -> HashMap<String, String> {
+    let index_path = ".fit/index";
+    let index_content = fs::read_to_string(index_path).unwrap_or_default();
+    index_content
+        .lines()
+        .map(|line| {
+            let parts: Vec<&str> = line.split_whitespace().collect();
+            (parts[1].to_string(), parts[0].to_string())
+        })
+        .collect()
+}
+
+fn write_index(index: &HashMap<String, String>) {
+    let index_path = ".fit/index";
+    let content: String = index
+        .iter()
+        .map(|(path, hash)| format!("{} {}", hash, path))
+        .collect::<Vec<String>>()
+        .join("\n");
+    fs::write(index_path, content).unwrap();
 }
 
 fn rm_workflow(args: RmArgs) {
     let path = Path::new(&args.file);
     if path.exists() {
-        // Update the index to reflect the removal
-        let index_path = ".fit/index";
-        let index_content = fs::read_to_string(index_path).unwrap();
-        let updated_content: Vec<String> = index_content
-            .lines()
-            .filter(|line| !line.contains(&args.file))
-            .map(|line| line.to_string())
-            .collect();
-        fs::write(index_path, updated_content.join("\n")).unwrap();
-
-        // Remove the object file corresponding to the hash
-        let mut file = File::open(path).unwrap();
-        let mut contents = Vec::new();
-        file.read_to_end(&mut contents).unwrap();
-
-        let mut hasher = Sha1::new();
-        hasher.update(&contents);
-        let hash = hasher.finalize();
-        let hash_hex = format!("{:x}", hash);
-
-        let object_path = format!(".fit/objects/{}", hash_hex);
-        if Path::new(&object_path).exists() {
-            fs::remove_file(&object_path).unwrap();
-            println!("Removed object {} from fit", hash_hex);
+        let mut index = read_index();
+        if let Some(hash_hex) = index.remove(path.to_str().unwrap()) {
+            remove_object(&hash_hex);
+            write_index(&index);
+            println!("Removed {} from fit index", args.file);
+        } else {
+            println!("File {} not found in fit index", args.file);
         }
-
-        println!("Removed {} from fit index", args.file);
     } else {
         println!("File {} not found", args.file);
     }
@@ -145,17 +217,19 @@ fn rm_workflow(args: RmArgs) {
 
 fn commit_workflow(args: CommitArgs) {
     // TBD
+    println!("Commit functionality not yet implemented : {}", args.message);
 }
 
 fn cat_file_workflow(args: FileArgs) {
     let hash = args.hash;
     println!("Unhashing SHA: {}", hash);
-    let object_path = format!(".fit/objects/{}", hash);
-    if Path::new(&object_path).exists() {
-        let content = fs::read_to_string(object_path).unwrap();
-        println!("{}", content);
-    } else {
-        println!("Object not found");
+    match read_object(&hash) {
+        Some((object_type, content)) => {
+            println!("Object type: {}", object_type);
+            println!("Content:");
+            println!("{}", String::from_utf8_lossy(&content));
+        },
+        None => println!("Object not found"),
     }
 }
 
