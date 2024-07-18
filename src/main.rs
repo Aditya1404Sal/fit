@@ -219,6 +219,26 @@ fn commit_workflow(args: CommitArgs) {
     // TBD
     println!("Commit functionality not yet implemented : {}", args.message);
 }
+// Creates list of entries inside INDEX tracking all the objects as a tree.
+fn create_tree_object(index: &HashMap<String, String>) -> String {
+    let mut tree_content = String::new();
+    for (path, hash) in index {
+        tree_content.push_str(&format!("100644 blob {} {}\n", hash, path));
+    }
+    write_object(tree_content.as_bytes(), "tree")
+}
+// Returns current commit
+fn get_current_commit() -> String {
+    let head_content = fs::read_to_string(".fit/HEAD").unwrap();
+    let ref_path = head_content.trim().strip_prefix("ref: ").unwrap();
+    fs::read_to_string(ref_path).unwrap_or_default().trim().to_string()
+}
+// Changes HEAD pointer to newest commit
+fn update_current_branch(commit_hash: &str) {
+    let head_content = fs::read_to_string(".fit/HEAD").unwrap();
+    let ref_path = head_content.trim().strip_prefix("ref: ").unwrap();
+    fs::write(ref_path, commit_hash).unwrap();
+}
 
 fn cat_file_workflow(args: FileArgs) {
     let hash = args.hash;
