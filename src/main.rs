@@ -216,8 +216,18 @@ fn rm_workflow(args: RmArgs) {
 }
 
 fn commit_workflow(args: CommitArgs) {
-    // TBD
-    println!("Commit functionality not yet implemented : {}", args.message);
+    let index = read_index();
+    let tree_hash = create_tree_object(&index);
+    let parent_hash = get_current_commit();
+    let commit_content = format!(
+        "tree {}\nparent {}\n\n{}",
+        tree_hash,
+        parent_hash,
+        args.message
+    );
+    let commit_hash = write_object(commit_content.as_bytes(), "commit");
+    update_current_branch(&commit_hash);
+    println!("Created commit {}", commit_hash);
 }
 // Creates list of entries inside INDEX tracking all the objects as a tree.
 fn create_tree_object(index: &HashMap<String, String>) -> String {
