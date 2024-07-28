@@ -1,13 +1,14 @@
-use std::collections::HashMap;
+use clap::{Args, Parser, Subcommand};
+use flate2::read::ZlibDecoder;
+use flate2::write::ZlibEncoder;
+use flate2::Compression;
+use sha1::{Digest, Sha1};
+use std::borrow::Cow;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::fs::File;
 use std::io::{self, Read, Write};
 use std::path::Path;
-use sha1::{Sha1, Digest};
-use clap::{Args, Parser, Subcommand};
-use flate2::write::ZlibEncoder;
-use flate2::read::ZlibDecoder;
-use flate2::Compression;
 
 #[derive(Parser)]
 struct Fit {
@@ -25,6 +26,7 @@ enum FitCommands {
     Commit(CommitArgs),
     Catfile(FileArgs),
     Status,
+    Reset(ResetArgs),
 }
 
 #[derive(Args)]
@@ -35,6 +37,11 @@ struct CloneArgs {
 #[derive(Args)]
 struct FileArgs {
     hash: String,
+}
+
+#[derive(Args)]
+struct ResetArgs {
+    commit_hash: String,
 }
 
 #[derive(Args)]
@@ -78,7 +85,9 @@ impl StagingArea {
     }
 
     fn is_staged(&self, path: &String) -> bool {
-        self.added.contains_key(path) || self.modified.contains_key(path) || self.deleted.contains(path)
+        self.added.contains_key(path)
+            || self.modified.contains_key(path)
+            || self.deleted.contains(path)
     }
 }
 
@@ -93,6 +102,7 @@ fn main() -> io::Result<()> {
         FitCommands::Commit(commit_args) => commit_workflow(commit_args)?,
         FitCommands::Catfile(file_args) => cat_file_workflow(file_args)?,
         FitCommands::Status => status_workflow()?,
+        FitCommands::Reset(reset_args) => reset_workflow(&reset_args.commit_hash)?,
     }
     Ok(())
 }
@@ -120,10 +130,7 @@ fn create_empty_tree() -> io::Result<String> {
 }
 
 fn create_initial_commit(tree_hash: String) -> io::Result<String> {
-    let commit_content = format!(
-        "tree {}\n\nInitial commit",
-        tree_hash
-    );
+    let commit_content = format!("tree {}\n\nInitial commit", tree_hash);
     write_object(commit_content.as_bytes(), "commit")
 }
 
@@ -156,12 +163,12 @@ fn write_object(content: &[u8], object_type: &str) -> io::Result<String> {
     hasher.update(content);
     let hash = hasher.finalize();
     let hash_hex = format!("{:x}", hash);
-    
+
     let dir_name = &hash_hex[0..2];
     let file_name = &hash_hex[2..];
     let object_dir = Path::new(".fit").join("objects").join(dir_name);
     fs::create_dir_all(&object_dir)?;
-    
+
     let object_path = object_dir.join(file_name);
     let file = File::create(object_path)?;
     let mut encoder = ZlibEncoder::new(file, Compression::default());
@@ -175,8 +182,11 @@ fn write_object(content: &[u8], object_type: &str) -> io::Result<String> {
 fn read_object(hash: &str) -> io::Result<Option<(String, Vec<u8>)>> {
     let dir_name = &hash[0..2];
     let file_name = &hash[2..];
-    let object_path = Path::new(".fit").join("objects").join(dir_name).join(file_name);
-    
+    let object_path = Path::new(".fit")
+        .join("objects")
+        .join(dir_name)
+        .join(file_name);
+
     if !object_path.exists() {
         return Ok(None);
     }
@@ -212,7 +222,11 @@ fn add_workflow(args: AddArgs) -> io::Result<()> {
     Ok(())
 }
 
-fn add_file(path: &Path, staging_area: &mut StagingArea, index: &mut HashMap<String, String>) -> io::Result<()> {
+fn add_file(
+    path: &Path,
+    staging_area: &mut StagingArea,
+    index: &mut HashMap<String, String>,
+) -> io::Result<()> {
     let mut file = File::open(path)?;
     let mut contents = Vec::new();
     file.read_to_end(&mut contents)?;
@@ -234,7 +248,11 @@ fn add_file(path: &Path, staging_area: &mut StagingArea, index: &mut HashMap<Str
     Ok(())
 }
 
-fn add_directory(path: &Path, staging_area: &mut StagingArea, index: &mut HashMap<String, String>) -> io::Result<()> {
+fn add_directory(
+    path: &Path,
+    staging_area: &mut StagingArea,
+    index: &mut HashMap<String, String>,
+) -> io::Result<()> {
     for entry in fs::read_dir(path)? {
         let entry = entry?;
         let path = entry.path();
@@ -334,7 +352,10 @@ fn commit_workflow(args: CommitArgs) -> io::Result<()> {
     println!("Commiting...");
 
     let staging_area = read_staging_area()?;
-    if staging_area.added.is_empty() && staging_area.modified.is_empty() && staging_area.deleted.is_empty() {
+    if staging_area.added.is_empty()
+        && staging_area.modified.is_empty()
+        && staging_area.deleted.is_empty()
+    {
         println!("Nothing to commit. Working tree clean.");
         return Ok(());
     }
@@ -342,7 +363,11 @@ fn commit_workflow(args: CommitArgs) -> io::Result<()> {
     let mut index = read_index()?;
 
     // Apply changes from staging area to index
-    for (path, hash) in staging_area.added.iter().chain(staging_area.modified.iter()) {
+    for (path, hash) in staging_area
+        .added
+        .iter()
+        .chain(staging_area.modified.iter())
+    {
         index.insert(path.clone(), hash.clone());
     }
     for path in &staging_area.deleted {
@@ -357,9 +382,7 @@ fn commit_workflow(args: CommitArgs) -> io::Result<()> {
 
     let commit_content = format!(
         "tree {}\nparent {}\n\n{}",
-        tree_hash,
-        parent_hash,
-        args.message
+        tree_hash, parent_hash, args.message
     );
     println!("Commit content created.");
 
@@ -388,9 +411,10 @@ fn create_tree_object(index: &HashMap<String, String>) -> io::Result<String> {
 
 fn get_current_commit() -> io::Result<String> {
     let head_content = fs::read_to_string(".fit/HEAD")?;
-    let ref_path = head_content.trim().strip_prefix("ref: ").ok_or_else(|| {
-        io::Error::new(io::ErrorKind::InvalidData, "Invalid HEAD content")
-    })?;
+    let ref_path = head_content
+        .trim()
+        .strip_prefix("ref: ")
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "Invalid HEAD content"))?;
     let full_ref_path = Path::new(".fit").join(ref_path);
     let commit_hash = fs::read_to_string(full_ref_path)?.trim().to_string();
     Ok(commit_hash)
@@ -398,9 +422,10 @@ fn get_current_commit() -> io::Result<String> {
 
 fn update_current_branch(commit_hash: &str) -> io::Result<()> {
     let head_content = fs::read_to_string(".fit/HEAD")?;
-    let ref_path = head_content.trim().strip_prefix("ref: ").ok_or_else(|| {
-        io::Error::new(io::ErrorKind::InvalidData, "Invalid HEAD content")
-    })?;
+    let ref_path = head_content
+        .trim()
+        .strip_prefix("ref: ")
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "Invalid HEAD content"))?;
     let full_ref_path = format!(".fit/{}", ref_path);
     fs::write(full_ref_path, commit_hash)
 }
@@ -421,7 +446,7 @@ fn cat_file_workflow(args: FileArgs) -> io::Result<()> {
             println!("Object type: {}", object_type);
             println!("Content:");
             println!("{}", String::from_utf8_lossy(&content));
-        },
+        }
         None => println!("Object not found"),
     }
     Ok(())
@@ -460,10 +485,73 @@ fn status_workflow() -> io::Result<()> {
     for entry in fs::read_dir(".")? {
         let entry = entry?;
         let path = entry.path();
-        if path.is_file() && !path.starts_with(".fit") && !index.contains_key(path.to_str().unwrap()) {
+        if path.is_file()
+            && !path.starts_with(".fit")
+            && !index.contains_key(path.to_str().unwrap())
+        {
             println!("  {}", path.display());
         }
     }
 
+    Ok(())
+}
+
+fn reset_workflow(commit_hash: &str) -> io::Result<()> {
+    if read_object(&commit_hash)?.is_none() {
+        return Err(io::Error::new(io::ErrorKind::NotFound, "Commit not found"));
+    }
+    update_current_branch(&commit_hash)?;
+
+    let (_, commit_content) = read_object(&commit_hash)?.unwrap();
+    let commit_content = String::from_utf8_lossy(&commit_content);
+    let tree_hash = commit_content
+        .lines()
+        .next()
+        .unwrap()
+        .split_whitespace()
+        .nth(1)
+        .unwrap();
+
+    let (_, tree_content) = read_object(tree_hash)?.unwrap();
+    let tree_content: Cow<str> = String::from_utf8_lossy(&tree_content);
+
+    let mut new_index = HashMap::new();
+    if Path::new(".fit/STAGING").exists() {
+        fs::remove_file(".fit/STAGING")?;
+    }
+
+    let current_index = read_index()?;
+    let current_files: HashSet<_> = current_index.keys().cloned().collect();
+
+    let mut target_files = HashSet::new();
+
+    for line in tree_content.lines() {
+        let parts: Vec<&str> = line.split_whitespace().collect();
+        let file_hash = parts[2];
+        let file_path = parts[3];
+
+        target_files.insert(file_path.to_string());
+
+        let (_, blob_content) = read_object(file_hash)?.unwrap();
+
+        if let Some(parent) = Path::new(file_path).parent() {
+            fs::create_dir_all(parent)?;
+        }
+
+        fs::write(file_path, blob_content)?;
+
+        new_index.insert(file_path.to_string(), file_hash.to_string());
+    }
+
+    for file in current_files.difference(&target_files) {
+        if Path::new(file).exists() {
+            fs::remove_file(file)?;
+            println!("Removed file: {}", file);
+        }
+    }
+
+    write_index(&new_index)?;
+
+    println!("Reset to commit {}", commit_hash);
     Ok(())
 }
