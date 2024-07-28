@@ -4,7 +4,7 @@ use flate2::write::ZlibEncoder;
 use flate2::Compression;
 use sha1::{Digest, Sha1};
 use std::borrow::Cow;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::fs::File;
 use std::io::{self, Read, Write};
@@ -515,27 +515,42 @@ fn reset_workflow(commit_hash: &str) -> io::Result<()> {
     let (_, tree_content) = read_object(tree_hash)?.unwrap();
     let tree_content: Cow<str> = String::from_utf8_lossy(&tree_content);
 
-    let mut index = HashMap::new();
+    let mut new_index = HashMap::new();
     if Path::new(".fit/STAGING").exists() {
         fs::remove_file(".fit/STAGING")?;
     }
+
+    let current_index = read_index()?;
+    let current_files: HashSet<_> = current_index.keys().cloned().collect();
+
+    let mut target_files = HashSet::new();
+
     for line in tree_content.lines() {
         let parts: Vec<&str> = line.split_whitespace().collect();
         let file_hash = parts[2];
         let file_path = parts[3];
 
+        target_files.insert(file_path.to_string());
+
         let (_, blob_content) = read_object(file_hash)?.unwrap();
 
-        if let Some(parent) = Path::new(file_path).parent(){
+        if let Some(parent) = Path::new(file_path).parent() {
             fs::create_dir_all(parent)?;
         }
 
         fs::write(file_path, blob_content)?;
 
-        index.insert(file_path.to_string(), file_hash.to_string());
+        new_index.insert(file_path.to_string(), file_hash.to_string());
     }
 
-    write_index(&index)?;
+    for file in current_files.difference(&target_files) {
+        if Path::new(file).exists() {
+            fs::remove_file(file)?;
+            println!("Removed file: {}", file);
+        }
+    }
+
+    write_index(&new_index)?;
 
     println!("Reset to commit {}", commit_hash);
     Ok(())
