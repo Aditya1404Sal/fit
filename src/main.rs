@@ -27,6 +27,7 @@ enum FitCommands {
     Catfile(FileArgs),
     Status,
     Reset(ResetArgs),
+    Branch(BranchArgs),
 }
 
 #[derive(Args)]
@@ -90,6 +91,19 @@ impl StagingArea {
             || self.deleted.contains(path)
     }
 }
+#[derive(Args)]
+struct BranchArgs {
+    #[clap(subcommand)]
+    command: BranchSubcommand,
+}
+#[derive(Subcommand)]
+enum BranchSubcommand {
+    List,
+    Create { name: String },
+    Delete { name: String },
+    Checkout { name: String },
+    CheckoutNew { name: String },
+}
 
 fn main() -> io::Result<()> {
     let args = Fit::parse();
@@ -103,6 +117,7 @@ fn main() -> io::Result<()> {
         FitCommands::Catfile(file_args) => cat_file_workflow(file_args)?,
         FitCommands::Status => status_workflow()?,
         FitCommands::Reset(reset_args) => reset_workflow(&reset_args.commit_hash)?,
+        FitCommands::Branch(branch_args) => branch_workflow(branch_args)?,
     }
     Ok(())
 }
@@ -414,20 +429,15 @@ fn get_current_commit() -> io::Result<String> {
     let ref_path = head_content
         .trim()
         .strip_prefix("ref: ")
-        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "Invalid HEAD content"))?;
+        .unwrap_or(&head_content);
     let full_ref_path = Path::new(".fit").join(ref_path);
-    let commit_hash = fs::read_to_string(full_ref_path)?.trim().to_string();
-    Ok(commit_hash)
+    Ok(fs::read_to_string(full_ref_path)?.trim().to_string())
 }
 
 fn update_current_branch(commit_hash: &str) -> io::Result<()> {
-    let head_content = fs::read_to_string(".fit/HEAD")?;
-    let ref_path = head_content
-        .trim()
-        .strip_prefix("ref: ")
-        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "Invalid HEAD content"))?;
-    let full_ref_path = format!(".fit/{}", ref_path);
-    fs::write(full_ref_path, commit_hash)
+    let current_branch = get_current_branch()?;
+    let branch_path = Path::new(".fit/refs/heads").join(current_branch);
+    fs::write(branch_path, commit_hash)
 }
 
 fn get_parent_commit(commit_info: &str) -> String {
@@ -453,6 +463,8 @@ fn cat_file_workflow(args: FileArgs) -> io::Result<()> {
 }
 
 fn status_workflow() -> io::Result<()> {
+    let current_branch = get_current_branch()?;
+    println!("On branch: {}", current_branch);
     let staging_area = read_staging_area()?;
     let index = read_index()?;
 
@@ -494,6 +506,15 @@ fn status_workflow() -> io::Result<()> {
     }
 
     Ok(())
+}
+
+fn get_current_branch() -> io::Result<String> {
+    let head_content = fs::read_to_string(".fit/HEAD")?;
+    Ok(head_content
+        .trim()
+        .strip_prefix("ref: refs/heads/")
+        .unwrap_or("master")
+        .to_string())
 }
 
 fn reset_workflow(commit_hash: &str) -> io::Result<()> {
@@ -553,5 +574,92 @@ fn reset_workflow(commit_hash: &str) -> io::Result<()> {
     write_index(&new_index)?;
 
     println!("Reset to commit {}", commit_hash);
+    Ok(())
+}
+
+fn branch_workflow(args: BranchArgs) -> io::Result<()> {
+    match args.command {
+        BranchSubcommand::List => list_branches()?,
+        BranchSubcommand::Create { name } => create_branch(&name)?,
+        BranchSubcommand::Delete { name } => delete_branch(&name)?,
+        BranchSubcommand::Checkout { name } => checkout_branch(&name)?,
+        BranchSubcommand::CheckoutNew { name } => checkout_new_branch(&name)?,
+    }
+    Ok(())
+}
+
+fn list_branches() -> io::Result<()> {
+    let branches_dir = Path::new(".fit/refs/heads");
+    for entry in fs::read_dir(branches_dir)? {
+        let entry = entry?;
+        println!("{}", entry.file_name().to_string_lossy());
+    }
+    Ok(())
+}
+
+fn create_branch(name: &str) -> io::Result<()> {
+    if name == "master" {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "Cannot create a duplicate master branch",
+        ));
+    }
+    let current_commit = get_current_commit()?;
+    let branch_path = Path::new(".fit/refs/heads").join(name);
+    if branch_path.exists() {
+        return Err(io::Error::new(
+            io::ErrorKind::AlreadyExists,
+            format!(
+                "Branch called '{}' already exists, choose a different name",
+                name
+            ),
+        ));
+    }
+    fs::write(branch_path, current_commit)?;
+    println!("Created branch '{}'", name);
+    Ok(())
+}
+
+fn delete_branch(name: &str) -> io::Result<()> {
+    if name == "master" {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "Cannot delete the master branch",
+        ));
+    }
+    let current_branch = get_current_branch()?;
+    if current_branch == *name {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "Cannot delete branch currently in use, please switch to master or different branch",
+        ));
+    }
+    let branch_path = Path::new(".fit/refs/heads").join(name);
+    if !branch_path.exists() {
+        return Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            "Branch not found, Cannot delete non-existent branch",
+        ));
+    }
+    fs::remove_file(branch_path)?;
+    println!("Deleted branch '{}'", name);
+    Ok(())
+}
+
+fn checkout_branch(name: &str) -> io::Result<()> {
+    let branch_path = Path::new(".fit/refs/heads").join(name);
+    if !branch_path.exists() {
+        return Err(io::Error::new(io::ErrorKind::NotFound, "Branch not found"));
+    }
+    let commit_hash = fs::read_to_string(branch_path)?;
+    fs::write(".fit/HEAD", format!("ref: refs/heads/{}\n", name))?;
+    reset_workflow(&commit_hash)?;
+    println!("Switched to branch '{}'", name);
+    Ok(())
+}
+
+fn checkout_new_branch(name: &str) -> io::Result<()> {
+    create_branch(name)?;
+    checkout_branch(name)?;
     Ok(())
 }
