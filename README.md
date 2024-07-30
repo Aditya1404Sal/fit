@@ -75,6 +75,35 @@ fit status
 ```sh
 fit reset <commit-hash>
 ```
+
+## Branch Management
+
+### List All Branches
+
+```sh
+fit branch list
+```
+
+### Create a New Branch
+```sh
+fit branch create <branch_name>
+```
+
+### Delete a Branch
+```sh
+fit branch delete <branch_name>
+```
+
+### Checkout a Branch / Switch to a branch
+```sh
+fit branch checkout <branch_name>
+```
+
+### Create and Checkout a New Branch
+```sh
+fit branch checkout-new <branch_name>
+```
+
 ## Example Workflow
 
 ### Initialize a new repository:
