@@ -28,6 +28,11 @@ enum FitCommands {
     Status,
     Reset(ResetArgs),
     Branch(BranchArgs),
+    Diff(DiffArgs),
+}
+#[derive(Args)]
+struct DiffArgs {
+    file_path: Option<String>,
 }
 
 #[derive(Args)]
@@ -118,6 +123,7 @@ fn main() -> io::Result<()> {
         FitCommands::Status => status_workflow()?,
         FitCommands::Reset(reset_args) => reset_workflow(&reset_args.commit_hash)?,
         FitCommands::Branch(branch_args) => branch_workflow(branch_args)?,
+        FitCommands::Diff(diff_args) => diff_workflow(diff_args)?,
     }
     Ok(())
 }
@@ -662,4 +668,54 @@ fn checkout_new_branch(name: &str) -> io::Result<()> {
     create_branch(name)?;
     checkout_branch(name)?;
     Ok(())
+}
+
+fn diff_workflow(args: DiffArgs) -> io::Result<()> {
+    let index = read_index()?;
+    
+    if let Some(file_path) = args.file_path {
+        if let Some(index_hash) = index.get(&file_path) {
+            diff_file(&file_path, index_hash)?;
+        } else {
+            println!("File '{}' not found in index", file_path);
+        }
+    } else {
+        diff_all_files(&index)?;
+    }
+    
+    Ok(())
+}
+
+fn diff_file(file_path: &str, index_hash: &str) -> io::Result<()> {
+    let (_, index_content) = read_object(index_hash)?.unwrap();
+    let index_content = String::from_utf8_lossy(&index_content);
+    
+    let current_content = fs::read_to_string(file_path)?;
+    
+    print_diff(file_path, &index_content, &current_content);
+    
+    Ok(())
+}
+
+fn diff_all_files(index: &HashMap<String, String>) -> io::Result<()> {
+    for (file_path, index_hash) in index {
+        diff_file(file_path, index_hash)?;
+    }
+    Ok(())
+}
+
+fn print_diff(file_path: &str, old_content: &str, new_content: &str) {
+    println!("Diff for file: {}", file_path);
+
+    let diff = diff::lines(old_content, new_content);
+    
+    for change in diff {
+        match change {
+            diff::Result::Left(l) => println!("-{}", l),
+            diff::Result::Both(l, _) => println!(" {}", l),
+            diff::Result::Right(r) => println!("+{}", r),
+        }
+    }
+    
+    println!();
 }
