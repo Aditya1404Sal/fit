@@ -32,7 +32,13 @@ enum FitCommands {
 }
 #[derive(Args)]
 struct DiffArgs {
-    file_path: Option<String>,
+    #[clap(subcommand)]
+    command: Option<DiffSubcommand>,
+}
+
+#[derive(Subcommand)]
+enum DiffSubcommand {
+    Commits { commit1: String, commit2: String },
 }
 
 #[derive(Args)]
@@ -669,38 +675,144 @@ fn checkout_new_branch(name: &str) -> io::Result<()> {
     checkout_branch(name)?;
     Ok(())
 }
-
 fn diff_workflow(args: DiffArgs) -> io::Result<()> {
-    let index = read_index()?;
-    
-    if let Some(file_path) = args.file_path {
-        if let Some(index_hash) = index.get(&file_path) {
-            diff_file(&file_path, index_hash)?;
-        } else {
-            println!("File '{}' not found in index", file_path);
+    match args.command {
+        Some(DiffSubcommand::Commits { commit1, commit2 }) => {
+            diff_commits(&commit1, &commit2)?;
         }
-    } else {
-        diff_all_files(&index)?;
+        None => {
+            diff_staged_vs_latest()?;
+        }
     }
-    
     Ok(())
 }
 
-fn diff_file(file_path: &str, index_hash: &str) -> io::Result<()> {
-    let (_, index_content) = read_object(index_hash)?.unwrap();
-    let index_content = String::from_utf8_lossy(&index_content);
-    
-    let current_content = fs::read_to_string(file_path)?;
-    
-    print_diff(file_path, &index_content, &current_content);
-    
+fn diff_commits(commit1: &str, commit2: &str) -> io::Result<()> {
+    println!("Diffing commit {} and {}", commit1, commit2);
+
+    // Get tree hashes for both commits
+    let tree1 = get_commit_tree(commit1)?;
+    let tree2 = get_commit_tree(commit2)?;
+
+    // Get file lists for both trees
+    let files1 = get_tree_files(&tree1)?;
+    let files2 = get_tree_files(&tree2)?;
+
+    // Compare files in both trees
+    let all_files: HashSet<_> = files1.keys().chain(files2.keys()).collect();
+
+    for file in all_files {
+        match (files1.get(file), files2.get(file)) {
+            (Some(hash1), Some(hash2)) if hash1 != hash2 => {
+                // File exists in both commits but has changed
+                let (_, content1) = read_object(hash1)?.unwrap();
+                let (_, content2) = read_object(hash2)?.unwrap();
+                print_diff(
+                    file,
+                    &String::from_utf8_lossy(&content1),
+                    &String::from_utf8_lossy(&content2),
+                );
+            }
+            (Some(hash), None) => {
+                // File exists in commit1 but not in commit2 (deleted)
+                let (_, content) = read_object(hash)?.unwrap();
+                print_diff(file, &String::from_utf8_lossy(&content), "");
+            }
+            (None, Some(hash)) => {
+                // File exists in commit2 but not in commit1 (new file)
+                let (_, content) = read_object(hash)?.unwrap();
+                print_diff(file, "", &String::from_utf8_lossy(&content));
+            }
+            _ => {} // File exists in both commits and hasn't changed, or doesn't exist in either
+        }
+    }
+
     Ok(())
 }
 
-fn diff_all_files(index: &HashMap<String, String>) -> io::Result<()> {
-    for (file_path, index_hash) in index {
-        diff_file(file_path, index_hash)?;
+fn get_commit_tree(commit_hash: &str) -> io::Result<String> {
+    let (_, commit_content) = read_object(commit_hash)?.unwrap();
+    let commit_content = String::from_utf8_lossy(&commit_content);
+    Ok(commit_content
+        .lines()
+        .next()
+        .unwrap()
+        .split_whitespace()
+        .nth(1)
+        .unwrap()
+        .to_string())
+}
+
+fn get_tree_files(tree_hash: &str) -> io::Result<HashMap<String, String>> {
+    let (_, tree_content) = read_object(tree_hash)?.unwrap();
+    let tree_content = String::from_utf8_lossy(&tree_content);
+    
+    let mut files = HashMap::new();
+    for line in tree_content.lines() {
+        let parts: Vec<&str> = line.split_whitespace().collect();
+        let file_hash = parts[2];
+        let file_path = parts[3];
+        files.insert(file_path.to_string(), file_hash.to_string());
     }
+    
+    Ok(files)
+}
+
+fn diff_staged_vs_latest() -> io::Result<()> {
+    let index = read_index()?;
+    let current_commit = get_current_commit()?;
+    
+    // Get the tree hash from the current commit
+    let (_, commit_content) = read_object(&current_commit)?.unwrap();
+    let commit_content = String::from_utf8_lossy(&commit_content);
+    let tree_hash = commit_content
+        .lines()
+        .next()
+        .unwrap()
+        .split_whitespace()
+        .nth(1)
+        .unwrap();
+
+    // Read the tree object
+    let (_, tree_content) = read_object(tree_hash)?.unwrap();
+    let tree_content = String::from_utf8_lossy(&tree_content);
+
+    // Parse the tree content to get file hashes
+    let mut commit_files = HashMap::new();
+    for line in tree_content.lines() {
+        let parts: Vec<&str> = line.split_whitespace().collect();
+        let file_hash = parts[2];
+        let file_path = parts[3];
+        commit_files.insert(file_path.to_string(), file_hash.to_string());
+    }
+
+    // Compare staged files with commit files
+    for (file_path, staged_hash) in &index {
+        if let Some(commit_hash) = commit_files.get(file_path) {
+            if staged_hash != commit_hash {
+                let (_, staged_content) = read_object(staged_hash)?.unwrap();
+                let (_, commit_content) = read_object(commit_hash)?.unwrap();
+                print_diff(
+                    file_path,
+                    &String::from_utf8_lossy(&commit_content),
+                    &String::from_utf8_lossy(&staged_content),
+                );
+            }
+        } else {
+            // New file in staging
+            let (_, staged_content) = read_object(staged_hash)?.unwrap();
+            print_diff(file_path, "", &String::from_utf8_lossy(&staged_content));
+        }
+    }
+
+    // Check for deleted files
+    for (file_path, commit_hash) in &commit_files {
+        if !index.contains_key(file_path) {
+            let (_, commit_content) = read_object(commit_hash)?.unwrap();
+            print_diff(file_path, &String::from_utf8_lossy(&commit_content), "");
+        }
+    }
+
     Ok(())
 }
 
