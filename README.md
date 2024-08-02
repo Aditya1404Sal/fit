@@ -75,7 +75,14 @@ fit status
 ```sh
 fit reset <commit-hash>
 ```
-
+### Viewing Diff of currently staged items and latest commit
+```sh
+fit diff
+```
+### Viewing Diff of any 2 Commits
+```sh
+fit diff commit <commit_1> <commit_2>
+```
 ## Branch Management
 
 ### List All Branches
