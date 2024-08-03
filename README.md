@@ -12,6 +12,9 @@ fit is a version control system inspired by Git. It offers similar functionality
 - View the contents of repository objects
 - Check the status of the working directory
 - Reset to a specific commit
+- Viewing Diff between two commits
+- Creating and switching to branches
+- Cloning branches
 
 ## Installation
 

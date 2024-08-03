@@ -1,4 +1,4 @@
-use clap::{Args, Parser, Subcommand};
+use clap::{error, Args, Parser, Subcommand};
 use flate2::read::ZlibDecoder;
 use flate2::write::ZlibEncoder;
 use flate2::Compression;
@@ -29,6 +29,12 @@ enum FitCommands {
     Reset(ResetArgs),
     Branch(BranchArgs),
     Diff(DiffArgs),
+    Merge(MergeArgs),
+}
+
+#[derive(Args)]
+struct MergeArgs {
+    branch: String,
 }
 #[derive(Args)]
 struct DiffArgs {
@@ -130,6 +136,7 @@ fn main() -> io::Result<()> {
         FitCommands::Reset(reset_args) => reset_workflow(&reset_args.commit_hash)?,
         FitCommands::Branch(branch_args) => branch_workflow(branch_args)?,
         FitCommands::Diff(diff_args) => diff_workflow(diff_args)?,
+        FitCommands::Merge(merge_args) => merge_workflow(merge_args)?,
     }
     Ok(())
 }
@@ -830,4 +837,73 @@ fn print_diff(file_path: &str, old_content: &str, new_content: &str) {
     }
     
     println!();
+}
+
+fn merge_workflow(args: MergeArgs) -> io::Result<()> {
+    let current_branch = get_current_branch()?;
+    if current_branch == args.branch {
+        return Err(io::Error::new(io::ErrorKind::InvalidInput, "cannot merge a branch into itself"));
+    }
+    if args.branch == "master" || current_branch != "master" {
+        return Err(io::Error::new(io::ErrorKind::PermissionDenied, "cannot merge master into Non-Head branch"));
+    }
+    println!("Merging {} into master...",args.branch);
+    let current_commit = get_current_commit()?;
+    let branch_commit = get_branch_commit(&args.branch)?;
+
+    if current_commit == branch_commit {
+        println!("Already up to date. Nothing to merge.");
+        return Ok(());
+    }
+
+    let merge_base = find_merge_base(&current_commit, &branch_commit)?;
+    
+    if merge_base == branch_commit {
+        println!("Fast-forward merge possible.");
+        fast_forward_merge( &branch_commit)?;
+    } else {
+        println!("Performing three-way merge.");
+        // three_way_merge(&current_commit, &branch_commit, &merge_base)?;
+    }
+
+    Ok(())
+}
+
+fn get_branch_commit(branch_name : &str) -> io::Result<String> {
+    let branch_path = Path::new(".fit/refs/heads").join(branch_name);
+    if !branch_path.exists(){
+        return Err(io::Error::new(io::ErrorKind::NotFound, "Branch not found"));
+    }
+    Ok(fs::read_to_string(branch_path)?.trim().to_string())
+}
+
+fn find_merge_base(current_commit: &str, branch_commit:&str) -> io::Result<String> {
+    let commit_history_1 = get_commit_history(current_commit)?;
+    let commit_history_2 = get_commit_history(branch_commit)?;
+
+    for commit in commit_history_2 {
+        if commit_history_1.contains(&commit){
+            return Ok(commit);
+        }
+    }
+    Err(io::Error::new(io::ErrorKind::NotFound, "Merge Base not found"))
+}
+
+fn get_commit_history(commit: &str) -> io::Result<Vec<String>> {
+    let mut history = Vec::new();
+    let mut current = commit.to_string();
+
+    while !current.is_empty() {
+        history.push(current.clone());
+        current = get_parent_commit(&read_object(&current)?.unwrap().0);
+    }
+
+    Ok(history)
+}
+
+fn fast_forward_merge(branch_commit: &str) -> io::Result<()> {
+    update_current_branch(branch_commit)?;
+    reset_workflow(branch_commit)?;
+    println!("Fast-forward merge completed.");
+    Ok(())
 }
