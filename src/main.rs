@@ -5,9 +5,9 @@ use flate2::Compression;
 use sha1::{Digest, Sha1};
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
-use std::fs;
+use std::fs::{self, OpenOptions};
 use std::fs::File;
-use std::io::{self, Read, Write};
+use std::io::{self, Read, Seek, Write};
 use std::path::Path;
 
 #[derive(Parser)]
@@ -938,5 +938,58 @@ fn stash_content() -> io::Result<()> {
     // Create a STASH file that stores content present in staged area, or unsaved content after which a commit hash is created
     // Which represents the contents of the pwd at that given instance, then a reset is made to the previous commit leaving the STASH hash saved
     // then when stash pop is called, this STASH hash is reset, if consecutive Stashes are made then it creates a stack
-    // following LIFO principle, most recent stash will be restored 
+    // following LIFO principle, most recent stash will be restored
+    let st_path = ".fit/STASH";
+    if !Path::new(st_path).exists(){
+        File::create(".fit/STASH")?;
+    }
+    let index = read_index()?;
+    let tree_hash = create_tree_object(&index)?;
+    let parent_hash = get_current_commit()?;
+    let commit_content = format!(
+        "tree {}\nparent {}\n\n{}",
+        tree_hash, parent_hash, "stash"
+    );
+
+    let stash_hash = write_object(commit_content.as_bytes(), "commit")?;
+    // Now save stash commit hash into .fit/STASH then reset the branch to parent_commit   
+    write_stashing_area(&stash_hash);
+    reset_workflow(&parent_hash);
+    Ok(())
+}
+
+fn read_stashing_area() -> io::Result<Option<String>> {
+    let st_path = ".fit/STASH";
+    if !Path::new(st_path).exists() {
+        return Ok(None);
+    }
+
+    let mut content = fs::read_to_string(st_path)?;
+
+    let mut lines: Vec<&str> = content.lines().collect();
+
+    if lines.is_empty() {
+        return Ok(None);
+    }
+
+    let topmost_stash = lines.remove(0).to_string();
+
+    content = lines.join("\n");
+    fs::write(st_path, content)?;
+
+    Ok(Some(topmost_stash))
+}
+
+
+fn write_stashing_area(stash_hash: &str) -> io::Result<()> {
+    let st_path = ".fit/STASH";
+    let mut file = OpenOptions::new().write(true).create(true).open(st_path)?;
+    let mut content = String::new();
+    file.read_to_string(&mut content)?;
+
+    let updated_content = format!("{}\n{}",stash_hash,content);
+    file.set_len(0);
+    file.seek(io::SeekFrom::Start(0))?;
+    file.write_all(updated_content.as_bytes())?;
+    Ok(())
 }
