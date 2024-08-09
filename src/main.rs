@@ -7,7 +7,7 @@ use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::fs::{self, OpenOptions};
 use std::fs::File;
-use std::io::{self, Read, Seek, Write};
+use std::io::{self, Error, Read, Seek, Write};
 use std::path::Path;
 
 #[derive(Parser)]
@@ -925,20 +925,19 @@ fn fast_forward_merge(branch_commit: &str) -> io::Result<()> {
 fn stash_workflow(args: StashArgs) -> io::Result<()> {
     match args.command {
         Some(StashSubCommand::Pop) => {
-            pop_stashed_content();
+            let _ = pop_stashed_content();
         }
         None => {
-            stash_content();
+            let _ = stash_content();
         }
     }
     Ok(())
 }
-
-fn stash_content() -> io::Result<()> {
     // Create a STASH file that stores content present in staged area, or unsaved content after which a commit hash is created
     // Which represents the contents of the pwd at that given instance, then a reset is made to the previous commit leaving the STASH hash saved
     // then when stash pop is called, this STASH hash is reset, if consecutive Stashes are made then it creates a stack
     // following LIFO principle, most recent stash will be restored
+fn stash_content() -> io::Result<()> {
     let st_path = ".fit/STASH";
     if !Path::new(st_path).exists(){
         File::create(".fit/STASH")?;
@@ -951,10 +950,9 @@ fn stash_content() -> io::Result<()> {
         tree_hash, parent_hash, "stash"
     );
 
-    let stash_hash = write_object(commit_content.as_bytes(), "commit")?;
-    // Now save stash commit hash into .fit/STASH then reset the branch to parent_commit   
-    write_stashing_area(&stash_hash);
-    reset_workflow(&parent_hash);
+    let stash_hash = write_object(commit_content.as_bytes(), "commit")?; 
+    let _ = write_stashing_area(&stash_hash);
+    let _ = reset_workflow(&parent_hash);
     Ok(())
 }
 
@@ -988,8 +986,18 @@ fn write_stashing_area(stash_hash: &str) -> io::Result<()> {
     file.read_to_string(&mut content)?;
 
     let updated_content = format!("{}\n{}",stash_hash,content);
-    file.set_len(0);
+    let _ = file.set_len(0);
     file.seek(io::SeekFrom::Start(0))?;
     file.write_all(updated_content.as_bytes())?;
     Ok(())
+}
+
+fn pop_stashed_content() -> io::Result<()> {
+    let latest_stash_provisional = read_stashing_area()?;
+    if let Some(latest_hash) = latest_stash_provisional {
+        let _ = reset_workflow(&latest_hash);
+        Ok(())
+    }else {
+        Err(Error::new(io::ErrorKind::NotFound, "cannot pop, stash something first"))
+    }
 }
