@@ -1,13 +1,13 @@
-use clap::{ Args, Parser, Subcommand};
+use clap::{Args, Parser, Subcommand};
 use flate2::read::ZlibDecoder;
 use flate2::write::ZlibEncoder;
 use flate2::Compression;
 use sha1::{Digest, Sha1};
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
-use std::fs::{self, OpenOptions};
 use std::fs::File;
-use std::io::{self, Error, Read, Seek, Write};
+use std::fs::{self};
+use std::io::{self, Error, Read, Write};
 use std::path::Path;
 
 #[derive(Parser)]
@@ -36,8 +36,7 @@ enum FitCommands {
 #[derive(Args)]
 struct StashArgs {
     #[clap(subcommand)]
-    command: Option<StashSubCommand>
-
+    command: Option<StashSubCommand>,
 }
 
 #[derive(Subcommand)]
@@ -767,7 +766,7 @@ fn get_commit_tree(commit_hash: &str) -> io::Result<String> {
 fn get_tree_files(tree_hash: &str) -> io::Result<HashMap<String, String>> {
     let (_, tree_content) = read_object(tree_hash)?.unwrap();
     let tree_content = String::from_utf8_lossy(&tree_content);
-    
+
     let mut files = HashMap::new();
     for line in tree_content.lines() {
         let parts: Vec<&str> = line.split_whitespace().collect();
@@ -775,14 +774,14 @@ fn get_tree_files(tree_hash: &str) -> io::Result<HashMap<String, String>> {
         let file_path = parts[3];
         files.insert(file_path.to_string(), file_hash.to_string());
     }
-    
+
     Ok(files)
 }
 
 fn diff_staged_vs_latest() -> io::Result<()> {
     let index = read_index()?;
     let current_commit = get_current_commit()?;
-    
+
     // Get the tree hash from the current commit
     let (_, commit_content) = read_object(&current_commit)?.unwrap();
     let commit_content = String::from_utf8_lossy(&commit_content);
@@ -841,7 +840,7 @@ fn print_diff(file_path: &str, old_content: &str, new_content: &str) {
     println!("Diff for file: {}", file_path);
 
     let diff = diff::lines(old_content, new_content);
-    
+
     for change in diff {
         match change {
             diff::Result::Left(l) => println!("-{}", l),
@@ -849,19 +848,25 @@ fn print_diff(file_path: &str, old_content: &str, new_content: &str) {
             diff::Result::Right(r) => println!("+{}", r),
         }
     }
-    
+
     println!();
 }
 
 fn merge_workflow(args: MergeArgs) -> io::Result<()> {
     let current_branch = get_current_branch()?;
     if current_branch == args.branch {
-        return Err(io::Error::new(io::ErrorKind::InvalidInput, "cannot merge a branch into itself"));
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "cannot merge a branch into itself",
+        ));
     }
     if args.branch == "master" || current_branch != "master" {
-        return Err(io::Error::new(io::ErrorKind::PermissionDenied, "cannot merge master into Non-Head branch"));
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "cannot merge master into Non-Head branch",
+        ));
     }
-    println!("Merging {} into master...",args.branch);
+    println!("Merging {} into master...", args.branch);
     let current_commit = get_current_commit()?;
     let branch_commit = get_branch_commit(&args.branch)?;
 
@@ -871,10 +876,10 @@ fn merge_workflow(args: MergeArgs) -> io::Result<()> {
     }
 
     let merge_base = find_merge_base(&current_commit, &branch_commit)?;
-    
+
     if merge_base == branch_commit {
         println!("Fast-forward merge possible.");
-        fast_forward_merge( &branch_commit)?;
+        fast_forward_merge(&branch_commit)?;
     } else {
         println!("Performing three-way merge.");
         // three_way_merge(&current_commit, &branch_commit, &merge_base)?;
@@ -883,24 +888,27 @@ fn merge_workflow(args: MergeArgs) -> io::Result<()> {
     Ok(())
 }
 
-fn get_branch_commit(branch_name : &str) -> io::Result<String> {
+fn get_branch_commit(branch_name: &str) -> io::Result<String> {
     let branch_path = Path::new(".fit/refs/heads").join(branch_name);
-    if !branch_path.exists(){
+    if !branch_path.exists() {
         return Err(io::Error::new(io::ErrorKind::NotFound, "Branch not found"));
     }
     Ok(fs::read_to_string(branch_path)?.trim().to_string())
 }
 
-fn find_merge_base(current_commit: &str, branch_commit:&str) -> io::Result<String> {
+fn find_merge_base(current_commit: &str, branch_commit: &str) -> io::Result<String> {
     let commit_history_1 = get_commit_history(current_commit)?;
     let commit_history_2 = get_commit_history(branch_commit)?;
 
     for commit in commit_history_2 {
-        if commit_history_1.contains(&commit){
+        if commit_history_1.contains(&commit) {
             return Ok(commit);
         }
     }
-    Err(io::Error::new(io::ErrorKind::NotFound, "Merge Base not found"))
+    Err(io::Error::new(
+        io::ErrorKind::NotFound,
+        "Merge Base not found",
+    ))
 }
 
 fn get_commit_history(commit: &str) -> io::Result<Vec<String>> {
@@ -925,34 +933,27 @@ fn fast_forward_merge(branch_commit: &str) -> io::Result<()> {
 fn stash_workflow(args: StashArgs) -> io::Result<()> {
     match args.command {
         Some(StashSubCommand::Pop) => {
-            let _ = pop_stashed_content();
+            pop_stashed_content()?;
         }
         None => {
-            let _ = stash_content();
+            stash_content()?;
         }
     }
     Ok(())
 }
-    // Create a STASH file that stores content present in staged area, or unsaved content after which a commit hash is created
-    // Which represents the contents of the pwd at that given instance, then a reset is made to the previous commit leaving the STASH hash saved
-    // then when stash pop is called, this STASH hash is reset, if consecutive Stashes are made then it creates a stack
-    // following LIFO principle, most recent stash will be restored
+// Create a STASH file that stores content present in staged area, or unsaved content after which a commit hash is created
+// Which represents the contents of the pwd at that given instance, then a reset is made to the previous commit leaving the STASH hash saved
+// then when stash pop is called, this STASH hash is reset, if consecutive Stashes are made then it creates a stack
+// following LIFO principle, most recent stash will be restored
 fn stash_content() -> io::Result<()> {
-    let st_path = ".fit/STASH";
-    if !Path::new(st_path).exists(){
-        File::create(".fit/STASH")?;
-    }
     let index = read_index()?;
     let tree_hash = create_tree_object(&index)?;
     let parent_hash = get_current_commit()?;
-    let commit_content = format!(
-        "tree {}\nparent {}\n\n{}",
-        tree_hash, parent_hash, "stash"
-    );
+    let commit_content = format!("tree {}\nparent {}\n\n{}", tree_hash, parent_hash, "stash");
 
-    let stash_hash = write_object(commit_content.as_bytes(), "commit")?; 
-    let _ = write_stashing_area(&stash_hash);
-    let _ = reset_workflow(&parent_hash);
+    let stash_hash = write_object(commit_content.as_bytes(), "commit")?;
+    write_stashing_area(&stash_hash)?;
+    reset_workflow(&parent_hash)?;
     Ok(())
 }
 
@@ -962,7 +963,7 @@ fn read_stashing_area() -> io::Result<Option<String>> {
         return Ok(None);
     }
 
-    let mut content = fs::read_to_string(st_path)?;
+    let content = fs::read_to_string(st_path)?;
 
     let mut lines: Vec<&str> = content.lines().collect();
 
@@ -972,32 +973,31 @@ fn read_stashing_area() -> io::Result<Option<String>> {
 
     let topmost_stash = lines.remove(0).to_string();
 
-    content = lines.join("\n");
-    fs::write(st_path, content)?;
+    let updated_content = lines.join("\n");
+    fs::write(st_path, updated_content)?;
 
     Ok(Some(topmost_stash))
 }
 
-
 fn write_stashing_area(stash_hash: &str) -> io::Result<()> {
     let st_path = ".fit/STASH";
-    let mut file = OpenOptions::new().write(true).create(true).open(st_path)?;
-    let mut content = String::new();
-    file.read_to_string(&mut content)?;
 
-    let updated_content = format!("{}\n{}",stash_hash,content);
-    let _ = file.set_len(0);
-    file.seek(io::SeekFrom::Start(0))?;
-    file.write_all(updated_content.as_bytes())?;
-    Ok(())
+    let existing_content = fs::read_to_string(st_path).unwrap_or_default();
+
+    let updated_content = format!("{}\n{}", stash_hash, existing_content.trim());
+
+    fs::write(st_path, updated_content)
 }
 
 fn pop_stashed_content() -> io::Result<()> {
-    let latest_stash_provisional = read_stashing_area()?;
-    if let Some(latest_hash) = latest_stash_provisional {
-        let _ = reset_workflow(&latest_hash);
-        Ok(())
-    }else {
-        Err(Error::new(io::ErrorKind::NotFound, "cannot pop, stash something first"))
+    match read_stashing_area()? {
+        Some(latest_hash) => {
+            reset_workflow(&latest_hash)?;
+            Ok(())
+        }
+        None => Err(Error::new(
+            io::ErrorKind::NotFound,
+            "cannot pop, stash something first",
+        )),
     }
 }
