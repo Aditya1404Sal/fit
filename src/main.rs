@@ -1,4 +1,4 @@
-use clap::{error, Args, Parser, Subcommand};
+use clap::{ Args, Parser, Subcommand};
 use flate2::read::ZlibDecoder;
 use flate2::write::ZlibEncoder;
 use flate2::Compression;
@@ -30,6 +30,19 @@ enum FitCommands {
     Branch(BranchArgs),
     Diff(DiffArgs),
     Merge(MergeArgs),
+    Stash(StashArgs),
+}
+
+#[derive(Args)]
+struct StashArgs {
+    #[clap(subcommand)]
+    command: Option<StashSubCommand>
+
+}
+
+#[derive(Subcommand)]
+enum StashSubCommand {
+    Pop,
 }
 
 #[derive(Args)]
@@ -44,7 +57,7 @@ struct DiffArgs {
 
 #[derive(Subcommand)]
 enum DiffSubcommand {
-    Commits { commit1: String, commit2: String },
+    Commit { commit1: String, commit2: String },
 }
 
 #[derive(Args)]
@@ -137,6 +150,7 @@ fn main() -> io::Result<()> {
         FitCommands::Branch(branch_args) => branch_workflow(branch_args)?,
         FitCommands::Diff(diff_args) => diff_workflow(diff_args)?,
         FitCommands::Merge(merge_args) => merge_workflow(merge_args)?,
+        FitCommands::Stash(stash_args) => stash_workflow(stash_args)?,
     }
     Ok(())
 }
@@ -684,7 +698,7 @@ fn checkout_new_branch(name: &str) -> io::Result<()> {
 }
 fn diff_workflow(args: DiffArgs) -> io::Result<()> {
     match args.command {
-        Some(DiffSubcommand::Commits { commit1, commit2 }) => {
+        Some(DiffSubcommand::Commit { commit1, commit2 }) => {
             diff_commits(&commit1, &commit2)?;
         }
         None => {
@@ -906,4 +920,23 @@ fn fast_forward_merge(branch_commit: &str) -> io::Result<()> {
     reset_workflow(branch_commit)?;
     println!("Fast-forward merge completed.");
     Ok(())
+}
+
+fn stash_workflow(args: StashArgs) -> io::Result<()> {
+    match args.command {
+        Some(StashSubCommand::Pop) => {
+            pop_stashed_content();
+        }
+        None => {
+            stash_content();
+        }
+    }
+    Ok(())
+}
+
+fn stash_content() -> io::Result<()> {
+    // Create a STASH file that stores content present in staged area, or unsaved content after which a commit hash is created
+    // Which represents the contents of the pwd at that given instance, then a reset is made to the previous commit leaving the STASH hash saved
+    // then when stash pop is called, this STASH hash is reset, if consecutive Stashes are made then it creates a stack
+    // following LIFO principle, most recent stash will be restored 
 }
