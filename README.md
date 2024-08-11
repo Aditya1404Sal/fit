@@ -86,6 +86,14 @@ fit diff
 ```sh
 fit diff commit <commit_1> <commit_2>
 ```
+### Stashing un-commited changes for a clean work-tree
+```sh
+fit stash
+```
+### Popping last stashed content to present working directory
+```sh
+fit stash pop
+```
 ## Branch Management
 
 ### List All Branches
